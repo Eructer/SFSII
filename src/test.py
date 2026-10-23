@@ -59,7 +59,8 @@ def make_conv_like(kind: str, c_in: int, c_out: int, k: int = 3):
         layer = IBNNLiteLayer(
             **common,
             initial_lambda = 0.0,
-            w_kernel_size = []
+            w_kernel_size = [],
+            in_size = (c_in, c_in)
             )
 
     elif kind == "ibnn":
@@ -69,6 +70,8 @@ def make_conv_like(kind: str, c_in: int, c_out: int, k: int = 3):
             f_solver = "fixed_point_iter",
             f_max_iter = 20,
             f_tol = 1e-4,
+            initial_lambda = 1e-4,
+            in_size = (c_in, c_in) 
             )
 
     else:
@@ -86,7 +89,7 @@ class Block(nn.Module):
         self.bn = nn.BatchNorm2d(c_out)
 
     def forward(self, x):
-        return self.b(self.conv(x))
+        return self.bn(self.conv(x))
 
 class TinyUNet(nn.Module):
     def __init__(self, in_ch: int = 1, n_classes: int = 2, kind: str = "sm", ibnn_at: tuple = ("enc1"), width: int = 16):
@@ -115,7 +118,7 @@ def iou(logits, y):
 
 def print_param_names(model):
     # Check
-    for n, p in mode.namde_parameters():
+    for n, p in model.named_parameters():
         print(f"  {n:60s} {tuple(p.shape)} requires_grad={p.requires_grad}")
 
 def lambda_params(model):
@@ -135,10 +138,10 @@ def check_lambda0(sm_model, ibnn_model, x):
 # Train and Eval section below ↓
 
 def run(kind: str, ibnn_at, epochs: int = 5, seed: int = 0, bs: int = 16):
-    torch.manual_speed(seed)
+    # torch.manual_speed(seed)
     train = DataLoader(ToyBlobs(256, seed = 0), batch_size = bs, shuffle = True)
     val = DataLoader(ToyBlobs(64, seed = 1), batch_size = bs)
-    model = TinyUnet(kind = kind, ibnn_at = ibnn_at).to(DEVICE)
+    model = TinyUNet(kind = kind, ibnn_at = ibnn_at).to(DEVICE)
     # Check
     opt = torch.optim.Adam(model.parameters(), lr = 1e-3)
 
@@ -156,7 +159,7 @@ def run(kind: str, ibnn_at, epochs: int = 5, seed: int = 0, bs: int = 16):
             opt.zero_grad()
             loss.backward()
             opt.step()
-        model.eva()
+        model.eval()
         with torch.no_grad():
             scores = [iou(model(x.to(DEVICE)), y.to(DEVICE)) for x, y in val]
         print(f"[{kind:5s}] epoch {ep}  loss {loss.item():.3f}  val IoU {sum(scores)/len(scores):.3f}")
@@ -178,4 +181,4 @@ if __name__ == "__main__":
     run("lite", ibnn_at = ("enc1",))
 
     # Full implicit layer
-    # run("ibnn", ibnn_at=("enc1",))
+    run("ibnn", ibnn_at=("enc1",))
