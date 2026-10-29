@@ -170,20 +170,59 @@ class TinyUNet(nn.Module):
         return self.head(d1)
 
 def iou(logits, y):
+    """Function for getting the IoU score
+
+    Parameters
+    ----------
+        logits ():
+        y ():
+
+    Returns
+    -------
+        float : IoU score
+    
+    """
     pred = logits.argmax(1)
     inter = ((pred == 1) & (y == 1)).sum().item()
     union = ((pred == 1) | (y == 1)).sum().item()
     return inter / max(union, 1)
 
-def print_param_names(model):
+def print_param_names(model: TinyUNet):
+    """Function for printing out model parameters
+
+    Parameters
+    ----------
+        model (TinyUNet): Model
+    
+    """
     # Check
     for n, p in model.named_parameters():
         print(f"  {n:60s} {tuple(p.shape)} requires_grad={p.requires_grad}")
 
-def lambda_params(model):
+def lambda_params(model: TinyUNet) -> dict:
+    """Function for getting lambda params
+
+    Parameters
+    ----------
+        model (TinyUNet): Model
+
+    Returns
+    -------
+        dict : Model lambda params
+    
+    """
     return {n : p for n, p in model.named_parameters() if "lambda" in n.lower()}
 
-def check_lambda0(sm_model, ibnn_model, x):
+def check_lambda0(sm_model: TinyUNet, ibnn_model: TinyUNet, x: torch.Tensor):
+    """Function for checking models lambda value (IBNN specific)
+
+    Parameters
+    ----------
+        sm_model (TinyUNet): Baseline model
+        ibnn_model (TinyUNet): IBNN model to check
+        x (torch.Tensor): Sample shape
+
+    """
     
     # Check
     missing = ibnn_model.load_state_dict(sm_model.state_dict(), strict = False)
@@ -196,22 +235,20 @@ def check_lambda0(sm_model, ibnn_model, x):
 
 # Train and Eval section below ↓
 
-def run(kind: str, ibnn_at, epochs: int = 5, seed: int = 0, bs: int = 16):
-    
-    # Using the local binary segmentation
-    # train = DataLoader(ToyBlobs(256, seed = 0), batch_size = bs, shuffle = True)
-    # val = DataLoader(ToyBlobs(64, seed = 1), batch_size = bs)
-    
-    # MNIST
-    # https://github.com/teavanist/MNIST-JPG/blob/master/MNIST%20Dataset%20JPG%20format.zip
-    train_path = "src/data/MNIST/training"
-    test_path = "src/data/MNIST/testing"
+def train(model, train_data, test_data, epochs: int = 5) -> TinyUNet:
+    """Function for training a model
 
-    train = DataLoader(MNISTSegmentationDataset(train_path, max_per_folder=400), batch_size=bs, shuffle=True)
-    test = DataLoader(MNISTSegmentationDataset(test_path, max_per_folder=400), batch_size=bs)
-    
-    
-    model = TinyUNet(kind = kind, ibnn_at = ibnn_at).to(DEVICE)
+    Parameters
+    ----------
+        model (TinyUNet): Model
+        train_data (Dataloader): Training data
+        test_data (Dataloader): Testing/Validating data
+        epochs (int): Epochs. Default '5'
+
+    Returns
+    -------
+        model (TinyUNet): Trained model
+    """
     # Check
     opt = torch.optim.Adam(model.parameters(), lr = 1e-3)
 
@@ -257,12 +294,32 @@ def run(kind: str, ibnn_at, epochs: int = 5, seed: int = 0, bs: int = 16):
     
     return model
 
-def save_model(model):
+def save_model(model: TinyUNet):
+    """Function for saving model
+
+    Parameters
+    ----------
+        model (TinyUNet): Model to save
+    """
     torch.save(model.state_dict(), "model.pth")
 
 # Change sizes depending on image
-def segment_image(model, image_path, out_path="segmented.png", device="cpu", n_classes = 1, compare = False):
-    """
+def segment_image(model, image_path, out_path="segmented.png", device="cpu", n_classes = 1, compare = False) -> np.array and np.array:
+    """Function for model predicting/segmenting
+
+    Parameters
+    ----------
+        model (TinyUNet): Conv Model
+        image_path (str): Input image path
+        out_path (str): Segmented image path. Default 'segmented.png'
+        device (str): Device to use. Default 'cpu'
+        n_classes (int): Prediction classes, based on loss function. Default '1'
+        compare (bool): Compare input and segmented image by plot. Default 'False'
+
+    Returns
+    -------
+        arr (np.array): Input image
+        pred (np.array): Predicted segmentation
     """
     # Eval model
     model.eval()
@@ -297,7 +354,7 @@ def segment_image(model, image_path, out_path="segmented.png", device="cpu", n_c
     # Save prediction image
     mask_img.save(out_path)
 
-    # Compare input and predicted
+    # Compare input and predicted by plotting
     if compare:
         fig, ax = plt.subplots(1,2,figsize=(6,3))
         ax[0].imshow(arr, cmap="gray")
@@ -310,29 +367,80 @@ def segment_image(model, image_path, out_path="segmented.png", device="cpu", n_c
 
     return arr, pred
 
+def from_scratch(save: bool) -> Tiny:
+    """Function for getting the model from training
 
-if __name__ == "__main__":
-    # Test MNIST image
+    Returns
+    -------
+        model (TinyUNet): Trained model
+    
+    """
+    print(f"-----Getting model from training-----")
+
+    # Create structure of data for lambda check
     x = torch.randn(16, 1, 28, 28, device = DEVICE)
+
+    # Create small conv, no IBNN. Baseline kinda
     sm = TinyUNet(kind = "sm").to(DEVICE)
-    lite = TinyUNet(kind = "lite", ibnn_at=("enc1",)).to(DEVICE)
-    print_param_names(lite)
-    check_lambda0(sm, lite, x)
-
-    # No IBNN
-    #run("sm", ibnn_at = ())
-
-    # Lite-IBNN
-    model = run("lite", ibnn_at = ("enc1",))
-
-    # 8000 total samples used in testing and training, IoU 0.989, 4 epochs, loss 0.006
+    
+    # Create lite IBNN
+    model = TinyUNet(kind = "lite", ibnn_at=("enc1",)).to(DEVICE)
 
     # Full implicit layer
-    #run("ibnn", ibnn_at=("enc1",))
+    # model = TinyUNet(kind = "full", ibnn_at=('enc1,)).to(DEVICE)
+
+    # Print parameters
+    print_param_names(model)
+    # IBNN lambda check
+    check_lambda0(sm, model, x)
+
+    # Setup and load MNIST data
+    # https://github.com/teavanist/MNIST-JPG/blob/master/MNIST%20Dataset%20JPG%20format.zip
+    train_path = "src/data/MNIST/training"
+    test_path = "src/data/MNIST/testing"
+
+    # 4000 training images and 4000 test/validate images
+    # 8000 total samples used in testing and training, IoU 0.989, 4 epochs, loss 0.006
+    train_data = DataLoader(MNISTSegmentationDataset(train_path, max_per_folder=400), batch_size=bs, shuffle=True)
+    test_data = DataLoader(MNISTSegmentationDataset(test_path, max_per_folder=400), batch_size=bs)
+    
+
+    # Train model
+    # Inside train is where you 
+    model = train(model, train, test)
 
     # Save model
-    save_model(model)
+    if save:
+        print(f"-----Saving Model-----")
+        save_model(model)
+    
+    return model
 
+def from_loaded(model_path : str) -> TinyUNet:
+    """Function for getting model from saved file. The load function does load abritrary data be carefull
+
+    Parameters
+    ----------
+        model_path (str): Path of model file
+
+    Returns
+    -------
+        model (TinyUNet): Model loaded from file
+    
+    """
+    # Load model, MUST USE SAME CLASS AS SAVED ONE
+    model = TinyUNet(kind = 'lite', ibnn_at=("enc1",)).to(DEVICE)
+    model.load_state_dict(torch.load(model_path, map_location=torch.device(DEVICE)))
+    return model
+
+if __name__ == "__main__":
+    # Train and get model from scratch
+    # model = from_scratch()
+
+    # Get model from file
+    model = from_loaded('model.pth')
+    
+    # Prediction array and pred
     arr, pred = segment_image(model, "src/data/MNIST/testing/9/7.jpg", device=DEVICE, n_classes=2)
 
     # print(arr)
