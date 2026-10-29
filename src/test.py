@@ -8,6 +8,7 @@ from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 import numpy as np
 from pathlib import Path
+import matplotlib as plt
 # For mnist
 import torchvision
 import torchvision.transforms as transforms
@@ -206,8 +207,8 @@ def run(kind: str, ibnn_at, epochs: int = 5, seed: int = 0, bs: int = 16):
     train_path = "src/data/MNIST/training"
     test_path = "src/data/MNIST/testing"
 
-    train = DataLoader(MNISTSegmentationDataset(train_path, max_per_folder=200), batch_size=bs, shuffle=True)
-    test = DataLoader(MNISTSegmentationDataset(test_path, max_per_folder=200), batch_size=bs)
+    train = DataLoader(MNISTSegmentationDataset(train_path, max_per_folder=400), batch_size=bs, shuffle=True)
+    test = DataLoader(MNISTSegmentationDataset(test_path, max_per_folder=400), batch_size=bs)
     
     
     model = TinyUNet(kind = kind, ibnn_at = ibnn_at).to(DEVICE)
@@ -238,34 +239,51 @@ def run(kind: str, ibnn_at, epochs: int = 5, seed: int = 0, bs: int = 16):
             scores = [iou(model(x.to(DEVICE)), y.to(DEVICE)) for x, y in test]
         print(f"[{kind:5s}] epoch {ep}  loss {loss.item():.3f}  val IoU {sum(scores)/len(scores):.3f}")
     secs = time.time() - t0
+    
+    # Print train time
+    # Took longer than 1 minute to train
+    tstr = ""
+    if secs > 60:
+        tstr = f"Train time (min) : {secs//60}"
+    else:
+        tstr = f"Train time (min): {secs}"
+    print(tstr)
+
+    
     mem = torch.cuda.max_memory_allocated() / 1e6 if DEVICE == "cuda" else float("nan")
+    
     for n, p in lambda_params(model).items():
         print(f"    {n} : mean = {p.mean().item():.4f}")
+    
     return model
 
 def save_model(model):
     torch.save(model.state_dict(), "model.pth")
 
 # Change sizes depending on image
-def segment_image(model, image_path, out_path="segmented.png", device="cpu", n_classes = 1):
+def segment_image(model, image_path, out_path="segmented.png", device="cpu", n_classes = 1, compare = False):
     """
     """
+    # Eval model
     model.eval()
 
+    # Get input image data
     img = Image.open(image_path).convert("L").resize((28,28))
-
+    # Turn image into array
     arr = np.array(img)
     
     # Use if white on black
     arr = 255 - arr
     
+    # Turn input image into torch array
     x = torch.from_numpy(arr).float().div(255.0)
-    
+    # Squeeze input image
     x = x.unsqueeze(0).unsqueeze(0).to(device)
 
     with torch.no_grad():
         out = model(x)
 
+    # Prediction
     if n_classes == 1:
         pred = (torch.sigmoid(out) > 0.5).squeeze().cpu().numpy()
     else:
@@ -273,9 +291,23 @@ def segment_image(model, image_path, out_path="segmented.png", device="cpu", n_c
         pred = pred > 0 if n_classes == 2 else pred
 
 
+    # Create mask image
     mask_img = Image.fromarray((pred * 255).astype(np.uint8)) if pred.dtype == bool else Image.fromarray((pred * (255 // max(pred.max(), 1))).astype(np.uint8))
 
+    # Save prediction image
     mask_img.save(out_path)
+
+    # Compare input and predicted
+    if compare:
+        fig, ax = plt.subplots(1,2,figsize=(6,3))
+        ax[0].imshow(arr, cmap="gray")
+        ax[0].set_title("Inupt")
+
+        ax[1].imshow(pred, cmap="gray")
+        ax[1].set_title("Prediction Mask")
+        for a in ax: a.axis("off")
+        plt.show()
+
     return arr, pred
 
 
@@ -293,12 +325,13 @@ if __name__ == "__main__":
     # Lite-IBNN
     model = run("lite", ibnn_at = ("enc1",))
 
-    
+    # 8000 total samples used in testing and training, IoU 0.989, 4 epochs, loss 0.006
+
     # Full implicit layer
     #run("ibnn", ibnn_at=("enc1",))
 
     # Save model
-    # save_model(model)
+    save_model(model)
 
     arr, pred = segment_image(model, "src/data/MNIST/testing/9/7.jpg", device=DEVICE, n_classes=2)
 
