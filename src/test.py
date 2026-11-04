@@ -4,11 +4,11 @@ import random
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, random_split
 from PIL import Image
 import numpy as np
 from pathlib import Path
-import matplotlib as plt
+import matplotlib.pyplot as plt
 # For mnist
 import torchvision
 import torchvision.transforms as transforms
@@ -23,6 +23,8 @@ if DEVICE == "cpu":
     print("Using cpu")
     torch.set_num_threads(10)
     torch.set_num_interop_threads(2)
+else:
+    print("Using GPU")
 
 # MNIST setup, using MNIST to test with images
 class MNISTSegmentationDataset(Dataset):
@@ -235,7 +237,7 @@ def check_lambda0(sm_model: TinyUNet, ibnn_model: TinyUNet, x: torch.Tensor):
 
 # Train and Eval section below ↓
 
-def train(model, train_data, test_data, epochs: int = 5) -> TinyUNet:
+def train(model, train_data, val_data, epochs: int = 5) -> TinyUNet:
     """Function for training a model
 
     Parameters
@@ -260,21 +262,42 @@ def train(model, train_data, test_data, epochs: int = 5) -> TinyUNet:
 
     for ep in range(epochs):
         print(f"Epoch : {ep}", end='\n')
+    
         model.train()
+    
         train_ind = 0
-        for x, y in train:
+    
+        for x, y in train_data:
+    
             print(f"\tTrain : {train_ind}", end='\r')
+    
             x, y = x.to(DEVICE), y.to(DEVICE)
+    
             # Loss would need to be the correct segmentation one for comp
+    
             loss = F.cross_entropy(model(x), y)
+    
             opt.zero_grad()
+    
             loss.backward()
+    
             opt.step()
+    
             train_ind += 1
+    
         model.eval()
+        val_loss = 0.0
         with torch.no_grad():
-            scores = [iou(model(x.to(DEVICE)), y.to(DEVICE)) for x, y in test]
-        print(f"[{kind:5s}] epoch {ep}  loss {loss.item():.3f}  val IoU {sum(scores)/len(scores):.3f}")
+            for x, y in val_data:
+                x, y = x.to(DEVICE), y.to(DEVICE)
+                val_loss += iou(model(x), y)
+        
+        val_loss /= len(val_data) 
+            
+            # scores = [iou(model(x.to(DEVICE)), y.to(DEVICE)) for x, y in test]
+        
+        print(f"epoch {ep}  loss {loss.item():.3f}  val IoU {val_loss:.4f}")
+    
     secs = time.time() - t0
     
     # Print train time
@@ -293,6 +316,25 @@ def train(model, train_data, test_data, epochs: int = 5) -> TinyUNet:
         print(f"    {n} : mean = {p.mean().item():.4f}")
     
     return model
+
+def test(model: TinyUNet, test_data) -> TinyUNet:
+
+    model.eval()
+    test_loss = 0.0
+    correct = 0
+    with torch.no_grad():
+        for x, y in test_data:
+            x, y = x.to(DEVICE), y.to(DEVICE)
+            pred = model(x)
+            test_loss += iou(pred, y)
+            correct += (pred.argmax(1) == y).sum().item()
+    print(correct)
+    print(len(test_data))
+    print(f"Test Loss : {test_loss/len(test_data):.4f} | Accuracy : {(correct/len(test_data)):.2f}")
+
+    return model
+
+
 
 def save_model(model: TinyUNet):
     """Function for saving model
@@ -330,7 +372,7 @@ def segment_image(model, image_path, out_path="segmented.png", device="cpu", n_c
     arr = np.array(img)
     
     # Use if white on black
-    arr = 255 - arr
+    # arr = 255 - arr
     
     # Turn input image into torch array
     x = torch.from_numpy(arr).float().div(255.0)
@@ -356,18 +398,19 @@ def segment_image(model, image_path, out_path="segmented.png", device="cpu", n_c
 
     # Compare input and predicted by plotting
     if compare:
-        fig, ax = plt.subplots(1,2,figsize=(6,3))
+        fig, ax = plt.subplots(1,2)
         ax[0].imshow(arr, cmap="gray")
-        ax[0].set_title("Inupt")
+        ax[0].set_title("Input")
 
         ax[1].imshow(pred, cmap="gray")
         ax[1].set_title("Prediction Mask")
-        for a in ax: a.axis("off")
-        plt.show()
+        for a in ax:
+            a.axis("off")
+        plt.savefig("compare"+out_path)
 
     return arr, pred
 
-def from_scratch(save: bool) -> Tiny:
+def from_scratch(epochs: int, sample_size: int, bs: int = 32, save: bool = False) -> TinyUNet:
     """Function for getting the model from training
 
     Returns
@@ -399,15 +442,28 @@ def from_scratch(save: bool) -> Tiny:
     train_path = "src/data/MNIST/training"
     test_path = "src/data/MNIST/testing"
 
-    # 4000 training images and 4000 test/validate images
-    # 8000 total samples used in testing and training, IoU 0.989, 4 epochs, loss 0.006
-    train_data = DataLoader(MNISTSegmentationDataset(train_path, max_per_folder=400), batch_size=bs, shuffle=True)
-    test_data = DataLoader(MNISTSegmentationDataset(test_path, max_per_folder=400), batch_size=bs)
+    # 5000 images
+    train_data = MNISTSegmentationDataset(train_path, max_per_folder=sample_size)
     
+    dataset_size = len(train_data)
+    train_size = int(0.7 * dataset_size)
+    val_size = int(0.15 * dataset_size)
+    test_size = dataset_size - train_size - val_size
 
+    generator = torch.Generator().manual_seed(45)
+    train_split, val_split, test_split = random_split(
+        train_data, [train_size, val_size, test_size]
+    )
+
+    train_set = DataLoader(train_split, batch_size=bs)
+    val_set = DataLoader(val_split, batch_size=bs)
+    test_set = DataLoader(test_split, batch_size=bs)
+    
     # Train model
-    # Inside train is where you 
-    model = train(model, train, test)
+    model = train(model, train_set, val_set, epochs)
+
+    # Test model
+    model = test(model, test_set)
 
     # Save model
     if save:
@@ -434,14 +490,17 @@ def from_loaded(model_path : str) -> TinyUNet:
     return model
 
 if __name__ == "__main__":
+    epochs = 20
+    samples = 800
     # Train and get model from scratch
-    # model = from_scratch()
+    model = from_scratch(epochs, samples, save=True)
 
     # Get model from file
-    model = from_loaded('model.pth')
+    # model = from_loaded('model.pth')
     
     # Prediction array and pred
-    arr, pred = segment_image(model, "src/data/MNIST/testing/9/7.jpg", device=DEVICE, n_classes=2)
+    target_file = "src/data/MNIST/testing/6/9793.jpg"
+    arr, pred = segment_image(model, target_file, out_path=f"{epochs}_{samples}.png", compare=True, device=DEVICE, n_classes=2)
 
     # print(arr)
     # print(pred)
