@@ -38,7 +38,7 @@ class MNISTSegmentationDataset(Dataset):
         by_folder = defaultdict(list)
         for p in all_paths:
             by_folder[p.parent].append(p)
-        
+
         rng = random.Random(seed)
         self.paths = []
         for folder in sorted(by_folder):
@@ -57,13 +57,72 @@ class MNISTSegmentationDataset(Dataset):
 
         image = np.array(Image.open(path).convert("L"))
         image = torch.from_numpy(image)
-        
+
         # The image is the mask
         # For every pixel in the image, if the pixel is > 127 put 1, else put 0. Tensor of 1's and 0's
         mask = (image > self.threshold).long()
         image = (image.float() / 255.0).unsqueeze(0)
 
         return image, mask
+
+    def __len__(self):
+        return len(self.paths)
+
+class SFSegmentationDataset(Dataset):
+    def __init__(self, root=None, paths = None, max_per_folder = None, shuffle_pick = False, threshold=127, seed = 0, tile = 512, crops_per_image = 16, fg_prob=0.5):
+        if paths is not None:
+            self.paths = list(paths)
+        else:
+            root = Path(root)
+            all_paths = sorted(
+                p for p in root.rglob("*")
+                if p.is_file() and p.suffix.lower() in [".jpeg"]
+            )
+
+            by_folder = defaultdict(list)
+            for p in all_paths:
+                by_folder[p.parent].append(p)
+
+            rng = random.Random(seed)
+            self.paths = []
+            for folder in sorted(by_folder):
+                files = by_folder[folder]
+                if max_per_folder is not None:
+                    if shuffle_pick:
+                        files = rng.sample(files, min(max_per_folder, len(files)))
+                    else:
+                        files = files[:max_per_folder]
+                self.paths.extend(files)
+
+        self.threshold = threshold
+        self.tile = tile
+        self.crops_per_image = crops_per_image if tile else 1
+        self.fg_prob = fg_prob
+
+    def _pick_origin(self, mask, H, W):
+        t = self.tile
+        if random.random() < self.fg_prob:
+            fg = np.flatnonzero(mask)
+            if fg.size:
+                cy, cx = divmod(int(fg[random.randrange(fg.size)]), W)
+                y = min(max(cy - t // 2, 0), H - t)
+                x = min(max(cx - t // 2, 0), W - t)
+                return y, x
+        return random.randint(0, H - t), random.randint(0, W - t)
+
+    def __getitem__(self, index):
+        path = self.paths[index // self.crops_per_image]
+        img = np.array(Image.open(path).convert("L"))
+        mask = (img > self.threshold).astype(np.int64)
+
+        if self.tile:
+            H, W = img.shape
+            y, x = self._pick_origin(mask, H, W)
+            img = img[y:y + self.tile, x:x + self.tile]
+            mask = mask[y:y + self.tile, x:x + self.tile]
+
+        image = torch.from_numpy(img).float().div(255.0).unsqueeze(0)
+        return image, torch.from_numpy(mask)
 
     def __len__(self):
         return len(self.paths)
@@ -91,7 +150,7 @@ class ToyBlobs(Dataset):
 def make_conv_like(kind: str, c_in: int, c_out: int, k: int = 3):
     """
     Conv-like layer factory
-    
+
     Parameters
     ----------
         kind (str): The type you want
@@ -115,7 +174,7 @@ def make_conv_like(kind: str, c_in: int, c_out: int, k: int = 3):
 
     if kind == "sm":
         layer = SMLayer(**common) #** -> unpacking a dict
-    
+
     elif kind == "lite":
         layer = IBNNLiteLayer(
             **common,
@@ -129,10 +188,10 @@ def make_conv_like(kind: str, c_in: int, c_out: int, k: int = 3):
             **common,
             w_kernel_size = [],
             f_solver = "fixed_point_iter",
-            f_max_iter = 20,
-            f_tol = 1e-4,
+            f_max_iter = 5,
+            f_tol = 1e-3,
             initial_lambda = 1e-4,
-            in_size = (c_in, c_in) 
+            in_size = (c_in, c_in)
             )
 
     else:
@@ -158,6 +217,7 @@ class TinyUNet(nn.Module):
         k = lambda name: kind if name in ibnn_at else "sm"
         self.enc1 = Block(k("enc1"), in_ch, width)
         self.enc2 = Block(k("enc2"), width, 2 * width)
+        self.enc3 = Block(k("enc3"), 2*width, 4*width)
         self.mid = Block(k("mid"), 2 * width, 2 * width)
         self.up = nn.ConvTranspose2d(2 * width, width, 2, stride = 2)
         self.dec1 = Block(k("dec1"), 2 * width, width)
@@ -182,7 +242,7 @@ def iou(logits, y):
     Returns
     -------
         float : IoU score
-    
+
     """
     pred = logits.argmax(1)
     inter = ((pred == 1) & (y == 1)).sum().item()
@@ -195,7 +255,7 @@ def print_param_names(model: TinyUNet):
     Parameters
     ----------
         model (TinyUNet): Model
-    
+
     """
     # Check
     for n, p in model.named_parameters():
@@ -211,7 +271,7 @@ def lambda_params(model: TinyUNet) -> dict:
     Returns
     -------
         dict : Model lambda params
-    
+
     """
     return {n : p for n, p in model.named_parameters() if "lambda" in n.lower()}
 
@@ -225,7 +285,7 @@ def check_lambda0(sm_model: TinyUNet, ibnn_model: TinyUNet, x: torch.Tensor):
         x (torch.Tensor): Sample shape
 
     """
-    
+
     # Check
     missing = ibnn_model.load_state_dict(sm_model.state_dict(), strict = False)
     print("load_state_dict:", missing)
@@ -234,6 +294,19 @@ def check_lambda0(sm_model: TinyUNet, ibnn_model: TinyUNet, x: torch.Tensor):
     with torch.no_grad():
         diff = (sm_model(x) - ibnn_model(x)).abs().max().item()
     print(f"max |SM - IBNN| at lambda = 0 : {diff:.2e} (expect -0)")
+
+def tiled_inference(model, img, tile_size=512, overlap=64):
+    H, W = img.shape[1], img.shape[2]
+    out = torch.zeros_lik(img)
+    counts = torch.zeros_like(img)
+    for y in range(0, H - overlap, tile_size - overlap):
+        for x in range(0, W - overlap, tile_size - overlap):
+            y2 = min(y + tile_size, H)
+            x_2 = min(x + tile_size, W)
+            tile = img[:, y:y2, x:x2]
+            out[:, y:y2, x:x2] == model(tile.unsqueeze(0))[0]
+            counts[:, y:y2, x:x2] += 1
+    return out / counts.clamp(min = 1)
 
 # Train and Eval section below ↓
 
@@ -256,50 +329,52 @@ def train(model, train_data, val_data, epochs: int = 5) -> TinyUNet:
 
     if DEVICE == "cuda":
         torch.cuda.reset_peak_memory_stats()
-    
+
     print(f"\n-----Training-----\n")
     t0 = time.time()
 
     for ep in range(epochs):
         print(f"Epoch : {ep}", end='\n')
-    
+
         model.train()
-    
+
         train_ind = 0
-    
+
         for x, y in train_data:
-    
+
             print(f"\tTrain : {train_ind}", end='\r')
-    
+
             x, y = x.to(DEVICE), y.to(DEVICE)
-    
+
             # Loss would need to be the correct segmentation one for comp
-    
-            loss = F.cross_entropy(model(x), y)
-    
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+              loss = F.cross_entropy(model(x), y)
+
             opt.zero_grad()
-    
+
             loss.backward()
-    
+
             opt.step()
-    
+
             train_ind += 1
-    
+
+            print(train_ind, f"alloc {torch.cuda.max_memory_allocated()/1e9:.2f} GB")
+
         model.eval()
         val_loss = 0.0
-        with torch.no_grad():
+        with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
             for x, y in val_data:
                 x, y = x.to(DEVICE), y.to(DEVICE)
                 val_loss += iou(model(x), y)
-        
-        val_loss /= len(val_data) 
-            
+
+        val_loss /= len(val_data)
+
             # scores = [iou(model(x.to(DEVICE)), y.to(DEVICE)) for x, y in test]
-        
+
         print(f"epoch {ep}  loss {loss.item():.3f}  val IoU {val_loss:.4f}")
-    
+
     secs = time.time() - t0
-    
+
     # Print train time
     # Took longer than 1 minute to train
     tstr = ""
@@ -309,12 +384,12 @@ def train(model, train_data, val_data, epochs: int = 5) -> TinyUNet:
         tstr = f"Train time (min): {secs}"
     print(tstr)
 
-    
+
     mem = torch.cuda.max_memory_allocated() / 1e6 if DEVICE == "cuda" else float("nan")
-    
+
     for n, p in lambda_params(model).items():
         print(f"    {n} : mean = {p.mean().item():.4f}")
-    
+
     return model
 
 def test(model: TinyUNet, test_data) -> TinyUNet:
@@ -367,13 +442,13 @@ def segment_image(model, image_path, out_path="segmented.png", device="cpu", n_c
     model.eval()
 
     # Get input image data
-    img = Image.open(image_path).convert("L").resize((28,28))
+    img = Image.open(image_path).convert("L").resize((2048,2048))
     # Turn image into array
     arr = np.array(img)
-    
+
     # Use if white on black
     # arr = 255 - arr
-    
+
     # Turn input image into torch array
     x = torch.from_numpy(arr).float().div(255.0)
     # Squeeze input image
@@ -416,18 +491,18 @@ def from_scratch(epochs: int, sample_size: int, bs: int = 32, save: bool = False
     Returns
     -------
         model (TinyUNet): Trained model
-    
+
     """
     print(f"-----Getting model from training-----")
 
     # Create structure of data for lambda check
-    x = torch.randn(16, 1, 28, 28, device = DEVICE)
+    # x = torch.randn(16, 1, 2048, 2048, device = DEVICE)
 
     # Create small conv, no IBNN. Baseline kinda
     sm = TinyUNet(kind = "sm").to(DEVICE)
-    
+
     # Create lite IBNN
-    model = TinyUNet(kind = "lite", ibnn_at=("enc1",)).to(DEVICE)
+    model = TinyUNet(kind = "lite", ibnn_at=("mid",)).to(DEVICE)
 
     # Full implicit layer
     # model = TinyUNet(kind = "full", ibnn_at=('enc1,)).to(DEVICE)
@@ -435,41 +510,53 @@ def from_scratch(epochs: int, sample_size: int, bs: int = 32, save: bool = False
     # Print parameters
     print_param_names(model)
     # IBNN lambda check
-    check_lambda0(sm, model, x)
+    # check_lambda0(sm, model, x)
 
+    # -------------------------------------------------------------
     # Setup and load MNIST data
     # https://github.com/teavanist/MNIST-JPG/blob/master/MNIST%20Dataset%20JPG%20format.zip
-    train_path = "src/data/MNIST/training"
-    test_path = "src/data/MNIST/testing"
+    # train_path = "src/data/MNIST/training"
+    # test_path = "src/data/MNIST/testing"
+    # MNIST
+    # train_data = MNISTSegmentationDataset(train_path, max_per_folder=sample_size)
+    # -------------------------------------------------------------
 
-    # 5000 images
-    train_data = MNISTSegmentationDataset(train_path, max_per_folder=sample_size)
-    
-    dataset_size = len(train_data)
-    train_size = int(0.7 * dataset_size)
-    val_size = int(0.15 * dataset_size)
-    test_size = dataset_size - train_size - val_size
+    # -------------------------------------------------------------
+    # Solar Filament
+    train_path = "src/data/filament/train/train_images"
+    # Discover files once (tile=None, so nothing is cropped here)
+    all_paths = list(SFSegmentationDataset(
+        train_path, max_per_folder=sample_size, tile=None).paths)
 
-    generator = torch.Generator().manual_seed(45)
-    train_split, val_split, test_split = random_split(
-        train_data, [train_size, val_size, test_size]
-    )
+    random.Random(45).shuffle(all_paths)
+    n = len(all_paths)
+    n_train, n_val = int(0.7 * n), int(0.15 * n)
 
-    train_set = DataLoader(train_split, batch_size=bs)
-    val_set = DataLoader(val_split, batch_size=bs)
-    test_set = DataLoader(test_split, batch_size=bs)
-    
+    train_paths = all_paths[:n_train]
+    val_paths   = all_paths[n_train:n_train + n_val]
+    test_paths  = all_paths[n_train + n_val:]
+
+    train_data = SFSegmentationDataset(paths=train_paths, tile=512, crops_per_image=16)
+    val_data   = SFSegmentationDataset(paths=val_paths,   tile=None)   # full 2048x2048
+    test_data  = SFSegmentationDataset(paths=test_paths,  tile=None)
+
+    train_loader = DataLoader(train_data, batch_size=bs, shuffle=True,
+                            num_workers=4, pin_memory=True, persistent_workers=True)
+    val_loader   = DataLoader(val_data, batch_size=1, num_workers=2, pin_memory=True)
+    test_loader  = DataLoader(test_data, batch_size=1, num_workers=2, pin_memory=True)
+
+
     # Train model
-    model = train(model, train_set, val_set, epochs)
+    model = train(model, train_loader, val_loader, epochs)
 
     # Test model
-    model = test(model, test_set)
+    model = test(model, test_loader)
 
     # Save model
     if save:
         print(f"-----Saving Model-----")
         save_model(model)
-    
+
     return model
 
 def from_loaded(model_path : str) -> TinyUNet:
@@ -482,7 +569,7 @@ def from_loaded(model_path : str) -> TinyUNet:
     Returns
     -------
         model (TinyUNet): Model loaded from file
-    
+
     """
     # Load model, MUST USE SAME CLASS AS SAVED ONE
     model = TinyUNet(kind = 'lite', ibnn_at=("enc1",)).to(DEVICE)
@@ -490,17 +577,22 @@ def from_loaded(model_path : str) -> TinyUNet:
     return model
 
 if __name__ == "__main__":
-    epochs = 20
-    samples = 800
+    # Free memory
+    torch.cuda.empty_cache()
+
+    epochs = 10
+
+    samples = 400
+
     # Train and get model from scratch
-    model = from_scratch(epochs, samples, save=True)
+    model = from_scratch(epochs, samples, save=True, bs=1)
 
     # Get model from file
     # model = from_loaded('model.pth')
-    
+
     # Prediction array and pred
-    target_file = "src/data/MNIST/testing/6/9793.jpg"
-    arr, pred = segment_image(model, target_file, out_path=f"{epochs}_{samples}.png", compare=True, device=DEVICE, n_classes=2)
+    target_file = "src/data/filament/test/test_images/20110424064534Lh.jpeg"
+    arr, pred = segment_image(model, target_file, out_path=f"{epochs}_{samples}.png", compare=True, device=DEVICE, n_classes=4)
 
     # print(arr)
     # print(pred)
