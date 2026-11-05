@@ -342,7 +342,7 @@ def train(model, train_data, val_data, epochs: int = 5) -> TinyUNet:
 
         for x, y in train_data:
 
-            print(f"\tTrain : {train_ind}", end='\r')
+            print(f"\tTrain : {train_ind} | Alloc {torch.cuda.max_memory_allocated()/1e9:.2f} GB", end='\r')
 
             x, y = x.to(DEVICE), y.to(DEVICE)
 
@@ -358,8 +358,6 @@ def train(model, train_data, val_data, epochs: int = 5) -> TinyUNet:
 
             train_ind += 1
 
-            print(train_ind, f"alloc {torch.cuda.max_memory_allocated()/1e9:.2f} GB")
-
         model.eval()
         val_loss = 0.0
         with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
@@ -369,9 +367,11 @@ def train(model, train_data, val_data, epochs: int = 5) -> TinyUNet:
 
         val_loss /= len(val_data)
 
+        torch.cuda.empty_cache()
+
             # scores = [iou(model(x.to(DEVICE)), y.to(DEVICE)) for x, y in test]
 
-        print(f"epoch {ep}  loss {loss.item():.3f}  val IoU {val_loss:.4f}")
+        print(f"epoch {ep}  loss {loss.item():.3f}  val IoU {val_loss:.4f} | Mem {torch.cuda.memory_allocated()/1e9:.2f}")
 
     secs = time.time() - t0
 
@@ -580,15 +580,17 @@ if __name__ == "__main__":
     # Free memory
     torch.cuda.empty_cache()
 
-    epochs = 10
+    epochs = 5
 
-    samples = 400
+    samples = 50
 
     # Train and get model from scratch
     model = from_scratch(epochs, samples, save=True, bs=1)
 
     # Get model from file
     # model = from_loaded('model.pth')
+
+    torch.cuda.empty_cache()
 
     # Prediction array and pred
     target_file = "src/data/filament/test/test_images/20110424064534Lh.jpeg"
