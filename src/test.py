@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 # For mnist
 import torchvision
 import torchvision.transforms as transforms
-
+import json
 
 # IBNN imports
 from modified_rf.nn_layers import SMLayer, IBNNLiteLayer, IBNNLayer
@@ -68,64 +68,51 @@ class MNISTSegmentationDataset(Dataset):
     def __len__(self):
         return len(self.paths)
 
-class SFSegmentationDataset(Dataset):
-    def __init__(self, root=None, paths = None, max_per_folder = None, shuffle_pick = False, threshold=127, seed = 0, tile = 512, crops_per_image = 16, fg_prob=0.5):
-        if paths is not None:
-            self.paths = list(paths)
-        else:
-            root = Path(root)
-            all_paths = sorted(
-                p for p in root.rglob("*")
-                if p.is_file() and p.suffix.lower() in [".jpeg"]
-            )
-
-            by_folder = defaultdict(list)
-            for p in all_paths:
-                by_folder[p.parent].append(p)
-
-            rng = random.Random(seed)
-            self.paths = []
-            for folder in sorted(by_folder):
-                files = by_folder[folder]
-                if max_per_folder is not None:
-                    if shuffle_pick:
-                        files = rng.sample(files, min(max_per_folder, len(files)))
-                    else:
-                        files = files[:max_per_folder]
-                self.paths.extend(files)
-
-        self.threshold = threshold
+class FilamentDataset(Dataset):
+    def __init__(self, pairs, tile=512, crops_per_image=16, fg_prob=0.5, augment=False):
+        """
+        pairs: list of (image_path, mask_path)
+        tile:  crop size; None returns the full image (validation/test)
+        """
+        self.pairs = list(pairs)
         self.tile = tile
         self.crops_per_image = crops_per_image if tile else 1
         self.fg_prob = fg_prob
-
-    def _pick_origin(self, mask, H, W):
-        t = self.tile
-        if random.random() < self.fg_prob:
-            fg = np.flatnonzero(mask)
-            if fg.size:
-                cy, cx = divmod(int(fg[random.randrange(fg.size)]), W)
-                y = min(max(cy - t // 2, 0), H - t)
-                x = min(max(cx - t // 2, 0), W - t)
-                return y, x
-        return random.randint(0, H - t), random.randint(0, W - t)
-
-    def __getitem__(self, index):
-        path = self.paths[index // self.crops_per_image]
-        img = np.array(Image.open(path).convert("L"))
-        mask = (img > self.threshold).astype(np.int64)
-
-        if self.tile:
-            H, W = img.shape
-            y, x = self._pick_origin(mask, H, W)
-            img = img[y:y + self.tile, x:x + self.tile]
-            mask = mask[y:y + self.tile, x:x + self.tile]
-
-        image = torch.from_numpy(img).float().div(255.0).unsqueeze(0)
-        return image, torch.from_numpy(mask)
+        self.augment = augment
 
     def __len__(self):
-        return len(self.paths)
+        return len(self.pairs) * self.crops_per_image
+
+    def __getitem__(self, index):
+        img_path, mask_path = self.pairs[index // self.crops_per_image]
+        img = np.array(Image.open(img_path).convert("L"))
+        mask = (np.array(Image.open(mask_path)) > 0).astype(np.int64)
+
+        if self.tile:
+            H, W = mask.shape
+            t = self.tile
+            y = x = None
+            if random.random() < self.fg_prob:
+                fg = np.flatnonzero(mask)
+                if fg.size:
+                    cy, cx = divmod(int(fg[random.randrange(fg.size)]), W)
+                    y = min(max(cy - t // 2, 0), H - t)
+                    x = min(max(cx - t // 2, 0), W - t)
+            if y is None:
+                y, x = random.randint(0, H - t), random.randint(0, W - t)
+            img = img[y:y + t, x:x + t]
+            mask = mask[y:y + t, x:x + t]
+
+        if self.augment:
+            if random.random() < 0.5:
+                img, mask = img[:, ::-1], mask[:, ::-1]
+            if random.random() < 0.5:
+                img, mask = img[::-1], mask[::-1]
+            k = random.randint(0, 3)
+            img, mask = np.rot90(img, k), np.rot90(mask, k)
+
+        image = torch.from_numpy(np.ascontiguousarray(img)).float().div(255.0).unsqueeze(0)
+        return image, torch.from_numpy(np.ascontiguousarray(mask))
 
 # Binary segmentation
 class ToyBlobs(Dataset):
@@ -232,7 +219,7 @@ class TinyUNet(nn.Module):
         return self.head(d1)
 
 def iou(logits, y):
-    """Function for getting the IoU score
+    """Function for getting the IoU score. Closer to 1 is better
 
     Parameters
     ----------
@@ -392,33 +379,33 @@ def train(model, train_data, val_data, epochs: int = 5) -> TinyUNet:
 
     return model
 
-def test(model: TinyUNet, test_data) -> TinyUNet:
+def test(model: TinyUNet, test_loader) -> TinyUNet:
 
     model.eval()
     test_loss = 0.0
+    total = 0
     correct = 0
     with torch.no_grad():
-        for x, y in test_data:
+        for x, y in test_loader:
             x, y = x.to(DEVICE), y.to(DEVICE)
             pred = model(x)
             test_loss += iou(pred, y)
             correct += (pred.argmax(1) == y).sum().item()
-    print(correct)
-    print(len(test_data))
-    print(f"Test Loss : {test_loss/len(test_data):.4f} | Accuracy : {(correct/len(test_data)):.2f}")
+            total += y.numel()
+    print(f"Test Loss : {test_loss/len(test_loader):.4f} | Accuracy : {(correct/total):.2f}")
 
     return model
 
 
 
-def save_model(model: TinyUNet):
+def save_model(model: TinyUNet, epoch):
     """Function for saving model
 
     Parameters
     ----------
         model (TinyUNet): Model to save
     """
-    torch.save(model.state_dict(), "model.pth")
+    torch.save(model.state_dict(), f"{epoch}_model.pth")
 
 # Change sizes depending on image
 def segment_image(model, image_path, out_path="segmented.png", device="cpu", n_classes = 1, compare = False) -> np.array and np.array:
@@ -481,11 +468,11 @@ def segment_image(model, image_path, out_path="segmented.png", device="cpu", n_c
         ax[1].set_title("Prediction Mask")
         for a in ax:
             a.axis("off")
-        plt.savefig("compare"+out_path)
+        plt.savefig(out_path)
 
     return arr, pred
 
-def from_scratch(epochs: int, sample_size: int, bs: int = 32, save: bool = False) -> TinyUNet:
+def from_scratch(epochs: int, bs: int = 32, save: bool = False) -> TinyUNet:
     """Function for getting the model from training
 
     Returns
@@ -523,22 +510,19 @@ def from_scratch(epochs: int, sample_size: int, bs: int = 32, save: bool = False
 
     # -------------------------------------------------------------
     # Solar Filament
-    train_path = "src/data/filament/train/train_images"
+    manifest = json.load(open("src/data/fil_modified/manifest.json"))
     # Discover files once (tile=None, so nothing is cropped here)
-    all_paths = list(SFSegmentationDataset(
-        train_path, max_per_folder=sample_size, tile=None).paths)
-
-    random.Random(45).shuffle(all_paths)
-    n = len(all_paths)
+    random.Random(45).shuffle(manifest)
+    n = len(manifest)
     n_train, n_val = int(0.7 * n), int(0.15 * n)
 
-    train_paths = all_paths[:n_train]
-    val_paths   = all_paths[n_train:n_train + n_val]
-    test_paths  = all_paths[n_train + n_val:]
+    train_pairs = manifest[:n_train]
+    val_pairs   = manifest[n_train:n_train + n_val]
+    test_pairs  = manifest[n_train + n_val:]
 
-    train_data = SFSegmentationDataset(paths=train_paths, tile=512, crops_per_image=16)
-    val_data   = SFSegmentationDataset(paths=val_paths,   tile=None)   # full 2048x2048
-    test_data  = SFSegmentationDataset(paths=test_paths,  tile=None)
+    train_data = FilamentDataset(train_pairs, tile=512, crops_per_image=16, augment=True)
+    val_data   = FilamentDataset(val_pairs, tile=None)
+    test_data  = FilamentDataset(test_pairs, tile=None)
 
     train_loader = DataLoader(train_data, batch_size=bs, shuffle=True,
                             num_workers=4, pin_memory=True, persistent_workers=True)
@@ -555,7 +539,7 @@ def from_scratch(epochs: int, sample_size: int, bs: int = 32, save: bool = False
     # Save model
     if save:
         print(f"-----Saving Model-----")
-        save_model(model)
+        save_model(model, f"{epochs}")
 
     return model
 
@@ -582,10 +566,8 @@ if __name__ == "__main__":
 
     epochs = 5
 
-    samples = 50
-
     # Train and get model from scratch
-    model = from_scratch(epochs, samples, save=True, bs=1)
+    model = from_scratch(epochs, save=True, bs=1)
 
     # Get model from file
     # model = from_loaded('model.pth')
@@ -594,7 +576,7 @@ if __name__ == "__main__":
 
     # Prediction array and pred
     target_file = "src/data/filament/test/test_images/20110424064534Lh.jpeg"
-    arr, pred = segment_image(model, target_file, out_path=f"{epochs}_{samples}.png", compare=True, device=DEVICE, n_classes=4)
+    arr, pred = segment_image(model, target_file, out_path=f"results/{epochs}.png", compare=True, device=DEVICE, n_classes=4)
 
     # print(arr)
     # print(pred)
