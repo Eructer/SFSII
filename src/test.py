@@ -472,7 +472,7 @@ def segment_image(model, image_path, out_path="segmented.png", device="cpu", n_c
 
     return arr, pred
 
-def from_scratch(epochs: int, bs: int = 32, save: bool = False) -> TinyUNet:
+def from_scratch(epochs: int, bs: int = 32, save: bool = False, training_size: int = 50, val_size: int = 50) -> TinyUNet:
     """Function for getting the model from training
 
     Returns
@@ -520,8 +520,8 @@ def from_scratch(epochs: int, bs: int = 32, save: bool = False) -> TinyUNet:
     val_pairs   = manifest[n_train:n_train + n_val]
     test_pairs  = manifest[n_train + n_val:]
 
-    train_data = FilamentDataset(train_pairs, tile=512, crops_per_image=16, augment=True)
-    val_data   = FilamentDataset(val_pairs, tile=None)
+    train_data = FilamentDataset(train_pairs[:training_size], tile=512, crops_per_image=16, augment=True)
+    val_data   = FilamentDataset(val_pairs[:val_size], tile=None)
     test_data  = FilamentDataset(test_pairs, tile=None)
 
     train_loader = DataLoader(train_data, batch_size=bs, shuffle=True,
@@ -565,9 +565,11 @@ if __name__ == "__main__":
     torch.cuda.empty_cache()
 
     epochs = 5
+    training_size = 50
+    val_size = 50
 
     # Train and get model from scratch
-    model = from_scratch(epochs, save=True, bs=1)
+    model = from_scratch(epochs, save=True, bs=1, training_size=training_size, val_size=val_size)
 
     # Get model from file
     # model = from_loaded('model.pth')
@@ -576,7 +578,7 @@ if __name__ == "__main__":
 
     # Prediction array and pred
     target_file = "src/data/filament/test/test_images/20110424064534Lh.jpeg"
-    arr, pred = segment_image(model, target_file, out_path=f"results/{epochs}.png", compare=True, device=DEVICE, n_classes=4)
+    arr, pred = segment_image(model, target_file, out_path=f"results/{epochs}_{training_size}_{val_size}.png", compare=True, device=DEVICE, n_classes=4)
 
     # print(arr)
     # print(pred)
