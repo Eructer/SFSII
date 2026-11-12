@@ -4,14 +4,14 @@ import random
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader, random_split
-from PIL import Image
-import numpy as np
 from pathlib import Path
 import matplotlib.pyplot as plt
+import json
+from torch.utils.data import DataLoader, random_split
 
 # Local imports
 from conv_net import UNet3
+from data import FilamentDataset
 from util import (
     iou,
     print_param_names,
@@ -26,7 +26,7 @@ from util import (
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # If you use loss_fn from util
-# ce = nn.CrossEntropyLoss(weight=torch.tensor([1.0, 5.0], device=DEVICE))
+ce = nn.CrossEntropyLoss(weight=torch.tensor([1.0, 5.0], device=DEVICE))
 
 if DEVICE == "cpu":
     print("Using cpu")
@@ -75,7 +75,7 @@ def train(model, train_data, val_data, epochs: int = 5):
 
             # Loss would need to be the correct segmentation one for comp
             with torch.autocast("cuda", dtype=torch.bfloat16):
-              loss = F.cross_entropy(model(x), y)
+              loss = loss_fn(model(x), y, ce)
 
             opt.zero_grad()
 
@@ -127,14 +127,12 @@ def test(model, test_loader):
         for x, y in test_loader:
             x, y = x.to(DEVICE), y.to(DEVICE)
             pred = model(x)
-            test_loss += iou(pred, y)
+            test_loss += loss_fn(pred, y, ce)
             correct += (pred.argmax(1) == y).sum().item()
             total += y.numel()
     print(f"Test Loss : {test_loss/len(test_loader):.4f} | Accuracy : {(correct/total):.2f}")
 
     return model
-
-
 
 def save_model(model, epoch):
     """Function for saving model
@@ -218,8 +216,6 @@ def from_scratch(epochs: int, bs: int = 32, save: bool = False, training_size: i
         model (TinyUNet): Trained model
 
     """
-    print(f"-----Getting model from training-----")
-
     # Create structure of data for lambda check
     # x = torch.randn(16, 1, 2048, 2048, device = DEVICE)
 
@@ -298,10 +294,10 @@ if __name__ == "__main__":
     KIND = "lite"
 
     # # Train and get model from scratch
-    # model = from_scratch(epochs,kind=KIND, save=True, bs=1, training_size=training_size, val_size=val_size, crop_size=crop_size)
+    model = from_scratch(epochs,kind=KIND, save=True, bs=1, training_size=training_size, val_size=val_size, crop_size=crop_size)
 
     # # Get model from file
-    model = from_loaded('lite_5_100_50_8_model.pth', KIND)
+    # model = from_loaded('lite_5_100_50_8_model.pth', KIND)
 
     # torch.cuda.empty_cache()
     target_files = [

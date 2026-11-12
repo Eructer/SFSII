@@ -3,6 +3,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 from collections import Counter, defaultdict
+import matplotlib.pyplot as plt
 
 json_path = "src/data/filament/train/MAGFiLO.json"
 out = "src/data/fil_modified"

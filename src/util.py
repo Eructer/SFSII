@@ -98,5 +98,5 @@ def soft_iou_loss(logits, y, eps=1e-6):
     return 1 - (inter + eps) / (p.sum() + t.sum() - inter + eps)
 
 
-def loss_fn(logits, y):
+def loss_fn(logits, y, ce):
     return ce(logits.float(), y) + soft_iou_loss(logits, y)
