@@ -113,3 +113,61 @@ Total Correct Pixels: 32179208
 Total Batches: 8
 Test IoU  : 0.8742 | Accuracy : 95.90%
 -----Saving Model-----
+
+
+
+-----Getting model from training-----
+  enc1.conv._theta.m                                           (16, 1, 3, 3) requires_grad=True
+  enc1.conv._theta.b                                           (16, 1, 1) requires_grad=True
+  enc1.bn.weight                                               (16,) requires_grad=True
+  enc1.bn.bias                                                 (16,) requires_grad=True
+  enc2.conv._theta.m                                           (32, 16, 3, 3) requires_grad=True
+  enc2.conv._theta.b                                           (32, 1, 1) requires_grad=True
+  enc2.bn.weight                                               (32,) requires_grad=True
+  enc2.bn.bias                                                 (32,) requires_grad=True
+  enc3.conv._theta.m                                           (64, 32, 3, 3) requires_grad=True
+  enc3.conv._theta.b                                           (64, 1, 1) requires_grad=True
+  enc3.bn.weight                                               (64,) requires_grad=True
+  enc3.bn.bias                                                 (64,) requires_grad=True
+  mid.conv._theta.m                                            (32, 32, 3, 3) requires_grad=True
+  mid.conv._theta.w                                            (32, 32) requires_grad=False
+  mid.conv._theta.b                                            (32, 1, 1) requires_grad=True
+  mid.conv._theta.lambda                                       (32, 1, 1) requires_grad=True
+  mid.conv._theta.sigma_x_compress                             (1,) requires_grad=False
+  mid.conv._theta.sigma_y_stretch                              (1,) requires_grad=False
+  mid.conv._theta.sigma_x_offset                               (1,) requires_grad=False
+  mid.conv._theta.sigma_y_offset                               (1,) requires_grad=False
+  mid.bn.weight                                                (32,) requires_grad=True
+  mid.bn.bias                                                  (32,) requires_grad=True
+  up.weight                                                    (32, 16, 2, 2) requires_grad=True
+  up.bias                                                      (16,) requires_grad=True
+  dec1.conv._theta.m                                           (16, 32, 3, 3) requires_grad=True
+  dec1.conv._theta.b                                           (16, 1, 1) requires_grad=True
+  dec1.bn.weight                                               (16,) requires_grad=True
+  dec1.bn.bias                                                 (16,) requires_grad=True
+  head.weight                                                  (2, 16, 1, 1) requires_grad=True
+  head.bias                                                    (2,) requires_grad=True
+
+-----Training-----
+
+Epoch : 0
+epoch 0  loss 0.587  val IoU 0.0000 | Mem 0.05
+Epoch : 1
+epoch 1  loss 0.550  val IoU 0.0000 | Mem 0.05
+Epoch : 2
+epoch 2  loss 0.524  val IoU 0.0000 | Mem 0.05
+--> New best model found at epoch 2 (Val IoU: 0.0000)! Saving weights...
+Epoch : 3
+epoch 3  loss 0.499  val IoU 0.0001 | Mem 0.05
+--> New best model found at epoch 3 (Val IoU: 0.0001)! Saving weights...
+Epoch : 4
+epoch 4  loss 0.471  val IoU 0.0001 | Mem 0.05
+--> New best model found at epoch 4 (Val IoU: 0.0001)! Saving weights...
+Train time (min) : 20.0
+    mid.conv._theta.lambda : mean = 0.0006
+
+-----Loading Best Model Parameters for Testing-----
+Total Correct Pixels: 24582762
+Total Batches: 8
+Test IoU  : 0.0002 | Accuracy : 73.26%
+-----Saving Model-----
