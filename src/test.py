@@ -302,7 +302,7 @@ def tiled_inference(model, img, tile_size=512, overlap=64):
     for y in range(0, H - overlap, tile_size - overlap):
         for x in range(0, W - overlap, tile_size - overlap):
             y2 = min(y + tile_size, H)
-            x_2 = min(x + tile_size, W)
+            x2 = min(x + tile_size, W)
             tile = img[:, y:y2, x:x2]
             out[:, y:y2, x:x2] == model(tile.unsqueeze(0))[0]
             counts[:, y:y2, x:x2] += 1
@@ -325,13 +325,15 @@ def train(model, train_data, val_data, epochs: int = 5) -> TinyUNet:
         model (TinyUNet): Trained model
     """
     # Check
-    opt = torch.optim.Adam(model.parameters(), lr = 1e-3)
+    opt = torch.optim.Adam(model.parameters(), lr = 3e-4)
 
     if DEVICE == "cuda":
         torch.cuda.reset_peak_memory_stats()
 
     print(f"\n-----Training-----\n")
     t0 = time.time()
+
+    best_val_iou = 0.0 
 
     for ep in range(epochs):
         print(f"Epoch : {ep}", end='\n')
@@ -340,9 +342,11 @@ def train(model, train_data, val_data, epochs: int = 5) -> TinyUNet:
 
         train_ind = 0
 
+        running_loss = 0.0
+
         for x, y in train_data:
 
-            print(f"\tTrain : {train_ind} | Alloc {torch.cuda.max_memory_allocated()/1e9:.2f} GB", end='\r')
+            # print(f"\tTrain : {train_ind} | Alloc {torch.cuda.max_memory_allocated()/1e9:.2f} GB", end='\r')
 
             x, y = x.to(DEVICE), y.to(DEVICE)
 
@@ -356,8 +360,11 @@ def train(model, train_data, val_data, epochs: int = 5) -> TinyUNet:
 
             opt.step()
 
+            running_loss += loss.item()
+
             train_ind += 1
 
+        epoch_loss = running_loss / len(train_data)
         model.eval()
         val_loss = 0.0
         with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
@@ -371,7 +378,12 @@ def train(model, train_data, val_data, epochs: int = 5) -> TinyUNet:
 
             # scores = [iou(model(x.to(DEVICE)), y.to(DEVICE)) for x, y in test]
 
-        print(f"epoch {ep}  loss {loss.item():.3f}  val IoU {val_loss:.4f} | Mem {torch.cuda.memory_allocated()/1e9:.2f}")
+        print(f"epoch {ep}  loss {epoch_loss:.3f}  val IoU {val_loss:.4f} | Mem {torch.cuda.memory_allocated()/1e9:.2f}")
+        
+        if val_loss > best_val_iou:
+            best_val_iou = val_loss
+            print(f"--> New best model found at epoch {ep} (Val IoU: {best_val_iou:.4f})! Saving weights...")
+            torch.save(model.state_dict(), "best_tinyunet.pt")
 
     secs = time.time() - t0
 
@@ -395,19 +407,33 @@ def train(model, train_data, val_data, epochs: int = 5) -> TinyUNet:
 def test(model: TinyUNet, test_data) -> TinyUNet:
 
     model.eval()
-    test_loss = 0.0
+    test_iou = 0.0
     correct = 0
+    total_pixels = 0  # <--- Add a tracker for total pixels
+    
     with torch.no_grad():
         for x, y in test_data:
             x, y = x.to(DEVICE), y.to(DEVICE)
             pred = model(x)
-            test_loss += iou(pred, y)
+            
+            # test_loss is actually tracking IoU scores based on your loop
+            test_iou += iou(pred, y)
+            
+            # Count correct pixels in this batch
             correct += (pred.argmax(1) == y).sum().item()
-    print(correct)
-    print(len(test_data))
-    print(f"Test Loss : {test_loss/len(test_data):.4f} | Accuracy : {(correct/len(test_data)):.2f}")
+            
+            # Track how many total pixels were in this batch (batch_size * channels * height * width)
+            total_pixels += y.numel() 
+            
+    # Calculate a clean percentage
+    accuracy_percentage = (correct / total_pixels) * 100
+
+    print(f"Total Correct Pixels: {correct}")
+    print(f"Total Batches: {len(test_data)}")
+    print(f"Test IoU  : {test_iou/len(test_data):.4f} | Accuracy : {accuracy_percentage:.2f}%")
 
     return model
+
 
 
 
@@ -549,6 +575,8 @@ def from_scratch(epochs: int, sample_size: int, bs: int = 32, save: bool = False
     # Train model
     model = train(model, train_loader, val_loader, epochs)
 
+    print("\n-----Loading Best Model Parameters for Testing-----")
+    model.load_state_dict(torch.load("best_tinyunet.pt", map_location=DEVICE))  
     # Test model
     model = test(model, test_loader)
 
