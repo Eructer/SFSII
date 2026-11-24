@@ -499,9 +499,6 @@ def load_any(path, device=DEVICE):
 if __name__ == "__main__":
     # Free memory
     # torch.cuda.empty_cache()
-
-
-
     epochs = 10
     training_size = 150
     val_size = 50
@@ -514,7 +511,7 @@ if __name__ == "__main__":
     # epochs = 10, training = 150, val = 50, crop = 8, kind = lite, ibnn at [mid, enc1], 41.2 hours,
 
     # Solar Filament
-    manifest = json.load(open("data/mask_cls/manifest.json"))
+    manifest = json.load(open("src/data/mask_cls/manifest.json"))
     # Discover files once (tile=None, so nothing is cropped here)
     random.Random(45).shuffle(manifest)
     n = len(manifest)
@@ -535,35 +532,35 @@ if __name__ == "__main__":
     test_loader  = DataLoader(test_data, batch_size=1, num_workers=2, pin_memory=True)
 
     # # Train and get model from scratch
-    model, config, results = from_scratch(
-        epochs,
-        kind=KIND,
-        save=True,
-        bs=bs,
-        training_size=training_size,
-        val_size=val_size,
-        crop_size=crop_size,
-        train_triples=train_triples,
-        val_triples=val_triples,
-        test_triples=test_triples,
-        train_data=train_data,
-        val_data=val_data,
-        test_data=test_data,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        test_loader=test_loader
-        )
+    # model, config, results = from_scratch(
+    #     epochs,
+    #     kind=KIND,
+    #     save=True,
+    #     bs=bs,
+    #     training_size=training_size,
+    #     val_size=val_size,
+    #     crop_size=crop_size,
+    #     train_triples=train_triples,
+    #     val_triples=val_triples,
+    #     test_triples=test_triples,
+    #     train_data=train_data,
+    #     val_data=val_data,
+    #     test_data=test_data,
+    #     train_loader=train_loader,
+    #     val_loader=val_loader,
+    #     test_loader=test_loader
+    #     )
 
-    # model, cfg = load_any(f"../{KIND}_{epochs}_{training_size}_{val_size}_{crop_size}_model.pt")
+    model, cfg = load_any(f"{KIND}_{epochs}_{training_size}_{val_size}_{crop_size}_mid_model.pt")
 
     # Test different thresholds for optimal pick
     #threshold_sweep(model, val_loader, DEVICE)
 
     # torch.cuda.empty_cache()
     target_files = [
-        "data/filament/test/test_images/20210730044930Lh.jpeg",
-        "data/filament/test/test_images/20211119005210Mh.jpeg",
-        "data/filament/test/test_images/20211214174010Mh.jpeg"
+        "src/data/filament/test/test_images/20210730044930Lh.jpeg",
+        "src/data/filament/test/test_images/20211119005210Mh.jpeg",
+        "src/data/filament/test/test_images/20211214174010Mh.jpeg"
     ]
     ind = 0
     for file in target_files:
